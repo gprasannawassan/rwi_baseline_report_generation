@@ -129,7 +129,7 @@ def clean_df(df):
     df_clean.columns = [clean_underscore_values(c) for c in df_clean.columns]
     return df_clean
 
-def save_and_render(section_id, title, df_table, fig):
+def save_and_render(section_id, title, df_table, fig, yaxis_title="Value"):
     """
     Renders a standard section with a table and a chart in a side-by-side layout.
     Saves results to Excel and PNG for the final ZIP download.
@@ -152,6 +152,7 @@ def save_and_render(section_id, title, df_table, fig):
                 xanchor="left", x=1.02
             ),
             xaxis=dict(categoryorder='total ascending'),
+            yaxis_title=yaxis_title,
             margin=dict(r=120, t=80, b=40, l=40),
             plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)",
@@ -203,7 +204,7 @@ def run_3_households(df):
     
     # 3.1 Chart - Simple single bar/pie representing the total
     fig_gp = px.pie(values=[total_hh], names=["Total Households"], title="3.1. Households – Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("3.1", "Households – Panchayath level", gp_hh, fig_gp)
+    save_and_render("3.1", "Households – Panchayath level", gp_hh, fig_gp, yaxis_title="Households")
 
     # 3.2 Village Level
     vil_hh = df.groupby("village")["farmer_name"].count().reset_index()
@@ -219,7 +220,7 @@ def run_3_households(df):
     vil_hh_table["Households %"] = vil_hh_table["Households %"].astype(str) + "%"
     
     fig_vil = px.bar(vil_hh_sorted, x="Village", y="Households %", title="3.2. Households – Village level", color_discrete_sequence=COLORS)
-    save_and_render("3.2", "Households – Village level", vil_hh_table, fig_vil)
+    save_and_render("3.2", "Households – Village level", vil_hh_table, fig_vil, yaxis_title="Households")
 
 def run_4_social_composition(df):
     # 4.1 Panchayath Level
@@ -237,7 +238,7 @@ def run_4_social_composition(df):
     })
     
     fig_gp = px.pie(names=expected, values=caste_counts.tolist(), title="4.1. Caste wise number of families - Panchayath level", hole=0.45, color_discrete_sequence=COLORS)
-    save_and_render("4.1", "Caste wise number of families - Panchayath level", gp_caste_table, fig_gp)
+    save_and_render("4.1", "Caste wise number of families - Panchayath level", gp_caste_table, fig_gp, yaxis_title="Caste")
 
     # 4.2 Village Level
     vil_caste = df.groupby(["village", "category"]).size().unstack(fill_value=0)
@@ -270,73 +271,80 @@ def run_4_social_composition(df):
     fig_df["Percentage"] = (fig_df["Count"] / fig_df.groupby("village")["Count"].transform("sum") * 100).round(2)
     
     fig2 = px.bar(fig_df.sort_values("Percentage", ascending=False), x="village", y="Percentage", color="Category", title="4.2. Caste wise number of families - Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("4.2", "Caste wise number of families - Village level", table_df[cols_order], fig2)
+    save_and_render("4.2", "Caste wise number of families - Village level", table_df[cols_order], fig2, yaxis_title="Caste")
 
 def run_5_occupations(df):
     
     # 5.1 Panchayath Level
     gp_occ = df.groupby("primary_occupation").size().reset_index(name="No of households")
     gp_occ.rename(columns={"primary_occupation": "Primary Occupation"}, inplace=True)
-    # FORMULA ALIGNMENT: Reference script uses sum of occupation counts (Share)
-    share_total = gp_occ["No of households"].sum()
-    gp_occ["Percentage"] = (gp_occ["No of households"] / share_total * 100).round(2) if share_total > 0 else 0
+    total_hh = len(df)
+    gp_occ["Percentage"] = (gp_occ["No of households"] / total_hh * 100).round(2) if total_hh > 0 else 0
     gp_occ["No of households %"] = gp_occ["Percentage"].astype(str) + "%"
     
-    fig_gp = px.bar(gp_occ.sort_values("Percentage", ascending=False), x="Primary Occupation", y="Percentage", title="5.1. Primary Occupations – Panchayat level", color_discrete_sequence=COLORS)
-    save_and_render("5.1", "Primary Occupations – Panchayat level", clean_df(gp_occ.drop(columns=["Percentage"])), fig_gp)
+    # User requested X-axis as actual Panchayath name
+    gp_name = df["gp"].iloc[0] if "gp" in df.columns else "Panchayath"
+    gp_occ["Panchayath"] = gp_name
+    fig_gp = px.bar(gp_occ, x="Panchayath", y="Percentage", color="Primary Occupation", title=f"5.1. Primary Occupations – {gp_name}", barmode="group", color_discrete_sequence=COLORS)
+    save_and_render("5.1", f"Primary Occupations – {gp_name}", clean_df(gp_occ.drop(columns=["Percentage", "Panchayath"])), fig_gp, yaxis_title="Primary Occupation")
 
     # 5.2 Village Level
     vil_occ_pivot = df.pivot_table(index="primary_occupation", columns="village", aggfunc="size", fill_value=0).reset_index()
     vil_occ_pivot.rename(columns={"primary_occupation": "Primary Occupation"}, inplace=True)
     vil_occ_pivot["Grand Total"] = vil_occ_pivot.iloc[:, 1:].sum(axis=1)
     
-    # Calculate percentage for bars
+    # Calculate percentage for bars - Denominator: Total households in each village
     vil_occ_melted = vil_occ_pivot.melt(id_vars="Primary Occupation", value_vars=vil_occ_pivot.columns[1:-1], var_name="village", value_name="Count")
-    vil_total_per_vil = vil_occ_melted.groupby("village")["Count"].transform("sum")
-    vil_occ_melted["Percentage"] = (vil_occ_melted["Count"] / vil_total_per_vil * 100).round(2)
+    vil_hh_counts = df.groupby("village")["farmer_name"].nunique().to_dict()
+    vil_occ_melted["Percentage"] = vil_occ_melted.apply(lambda row: (row["Count"] / vil_hh_counts[row["village"]] * 100), axis=1).round(2)
     
     total_row_vals = vil_occ_pivot.iloc[:, 1:].sum().tolist()
     total_row = pd.DataFrame([["Grand Total"] + total_row_vals], columns=vil_occ_pivot.columns)
     vil_occ_table = pd.concat([vil_occ_pivot, total_row], ignore_index=True)
     
-    fig_vil = px.bar(vil_occ_melted.sort_values("Percentage", ascending=False), x="Primary Occupation", y="Percentage", color="village", title="5.2. Primary Occupations – Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("5.2", "Primary Occupations – Village level", clean_df(vil_occ_table), fig_vil)
+    # User requested X-axis as village
+    fig_vil = px.bar(vil_occ_melted, x="village", y="Percentage", color="Primary Occupation", title="5.2. Primary Occupations – Village level", barmode="group", color_discrete_sequence=COLORS)
+    save_and_render("5.2", "Primary Occupations – Village level", clean_df(vil_occ_table), fig_vil, yaxis_title="Primary Occupation")
 
 def run_6_income_sources(df):
-    # Splitting multi-choice income sources using whitespace as per reference line 561
-    df_split = df.assign(income_cleaned=df["income_sources"].astype(str).str.split()).explode("income_cleaned")
-    df_split["income_cleaned"] = df_split["income_cleaned"].str.strip()
+    # Split the income_sources column and explode it into separate rows
+    df_split = df.assign(income_cleaned=df["income_sources"].str.split()).explode("income_cleaned")
+    # Clean up whitespace and standardize casing to merge 'livestock' and 'Livestock'
+    df_split["income_cleaned"] = df_split["income_cleaned"].str.strip().str.replace(" +", " ", regex=True).str.title()
 
-    # 6.1 Panchayath Level
-    gp_inc = df_split.groupby("income_cleaned")["farmer_name"].nunique().reset_index(name="No of households")
-    gp_inc.rename(columns={"income_cleaned": "Income Source"}, inplace=True)
-    # FORMULA ALIGNMENT: Reference script uses sum of income source counts (Share)
-    share_total = gp_inc["No of households"].sum()
-    gp_inc["No of households %"] = (gp_inc["No of households"] / share_total * 100).round(2).astype(str) + "%"
-    gp_inc["Percentage"] = (gp_inc["No of households"] / share_total * 100).round(2)
+    # 6.1 Panchayath Level Table
+    gp_totals = df_split.pivot_table(index="income_cleaned", columns="gp", aggfunc="size", fill_value=0).reset_index()
+    gp_totals.rename(columns={"income_cleaned": "Income Source"}, inplace=True)
     
-    fig_gp = px.bar(gp_inc.sort_values("Percentage", ascending=False), x="Income Source", y="Percentage", title="6.1. Income Sources – Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("6.1", "Income Sources – Panchayath level", clean_df(gp_inc.drop(columns=["Percentage"])), fig_gp)
+    # Compute Grand Total row
+    grand_total_values = gp_totals.iloc[:, 1:].sum(axis=0).astype(int).tolist()
+    grand_total_row = pd.DataFrame([["Grand Total"] + grand_total_values], columns=gp_totals.columns)
+    gp_inc_table = pd.concat([gp_totals, grand_total_row], ignore_index=True)
 
-    # 6.2 Village Level
-    vil_inc_pivot = df_split.pivot_table(index="income_cleaned", columns="village", values="farmer_name", aggfunc="nunique", fill_value=0)
-    vil_inc_pivot.columns = pd.MultiIndex.from_product([["No of households"], vil_inc_pivot.columns])
-    vil_inc_pivot = vil_inc_pivot.reset_index()
-    vil_inc_pivot.rename(columns={"income_cleaned": "Income Source"}, inplace=True)
+    # 6.1 Visualization Logic (Distribution)
+    gp_pivot = df_split.pivot_table(index="gp", columns="income_cleaned", aggfunc="size", fill_value=0)
+    gp_percentage = (gp_pivot.div(gp_pivot.sum(axis=1), axis=0).mul(100).round().reset_index())
+    gp_melted = gp_percentage.melt(id_vars="gp", var_name="Income Source", value_name="Percentage")
     
-    # Grand Total Row
-    gt_vals = vil_inc_pivot.iloc[:, 1:].sum()
-    gt_row = pd.DataFrame([["Grand Total"] + gt_vals.tolist()], columns=vil_inc_pivot.columns)
-    vil_inc_table = pd.concat([vil_inc_pivot, gt_row], ignore_index=True)
+    fig_gp = px.bar(gp_melted.sort_values("Percentage", ascending=False), x="gp", y="Percentage", color="Income Source", barmode="group", title="Panchayath - Level Income Sources Distribution", color_discrete_sequence=COLORS)
+    save_and_render("6.1", "Income Sources – Panchayath level", gp_inc_table, fig_gp, yaxis_title="Income Source (%)")
+
+    # 6.2 Village Level Table
+    vil_totals = df_split.pivot_table(index="income_cleaned", columns="village", aggfunc="size", fill_value=0).reset_index()
+    vil_totals.rename(columns={"income_cleaned": "Income Source"}, inplace=True)
     
-    # Calculate percentage for bars
-    vil_inc_melted = df_split.groupby(["village", "income_cleaned"])["farmer_name"].nunique().reset_index(name="Count")
-    # FORMULA ALIGNMENT: Reference script uses sum of income source counts in village (Share)
-    share_per_vil = vil_inc_melted.groupby("village")["Count"].transform("sum")
-    vil_inc_melted["Percentage"] = (vil_inc_melted["Count"] / share_per_vil * 100).round(2)
+    # Compute Grand Total row
+    grand_total_values_vil = vil_totals.iloc[:, 1:].sum(axis=0).astype(int).tolist()
+    grand_total_row_vil = pd.DataFrame([["Grand Total"] + grand_total_values_vil], columns=vil_totals.columns)
+    vil_inc_table = pd.concat([vil_totals, grand_total_row_vil], ignore_index=True)
+
+    # 6.2 Visualization Logic (Distribution)
+    vil_pivot = df_split.pivot_table(index="village", columns="income_cleaned", aggfunc="size", fill_value=0)
+    vil_percentage = (vil_pivot.div(vil_pivot.sum(axis=1), axis=0).mul(100).round().reset_index())
+    vil_melted = vil_percentage.melt(id_vars="village", var_name="Income Source", value_name="Percentage")
     
-    fig_vil = px.bar(vil_inc_melted.sort_values("Percentage", ascending=False), x="village", y="Percentage", color="income_cleaned", title="6.2. Income sources – Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("6.2", "Income sources – Village level", clean_df(vil_inc_table), fig_vil)
+    fig_vil = px.bar(vil_melted.sort_values("Percentage", ascending=False), x="village", y="Percentage", color="Income Source", barmode="group", title="Village-wise Income Sources Distribution", color_discrete_sequence=COLORS)
+    save_and_render("6.2", "Income sources – Village level", vil_inc_table, fig_vil, yaxis_title="Income Source (%)")
 
 def run_7_job_cards(df):
     
@@ -349,7 +357,7 @@ def run_7_job_cards(df):
     job_counts["Job Card Status"] = job_counts["Job Card Status"].replace({"yes": "HHs having Job cards", "no": "HHs without Job cards"})
     
     fig_gp = px.pie(job_counts, values="No of households", names="Job Card Status", title="7.1. Job cards – Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("7.1", "Job cards – Panchayath level", job_counts, fig_gp)
+    save_and_render("7.1", "Job cards – Panchayath level", job_counts, fig_gp, yaxis_title="Job Card Status")
 
     # 7.2 Village Level
     Y_L, N_L = "HHs having Job cards", "HHs without Job cards"
@@ -383,7 +391,7 @@ def run_7_job_cards(df):
     vil_job_display.rename(columns={"yes": "HHs having Job cards", "no": "HHs without Job cards", "Yes %": "HHs having Job cards %", "No %": "HHs without Job cards %"}, inplace=True)
     
     fig_vil = px.bar(vil_job.sort_values("Yes %", ascending=False), x="village", y=["Job card HH %", "No Job card HH %"], title="7.2. Job cards – Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("7.2", "Job cards – Village level", clean_df(vil_job_display), fig_vil)
+    save_and_render("7.2", "Job cards – Village level", clean_df(vil_job_display), fig_vil, yaxis_title="Job Card Status")
 
 def run_8_head_of_households(df):
     # PREPROCESSING ALIGNMENT: Reference script lines 870-871
@@ -410,7 +418,7 @@ def run_8_head_of_households(df):
         "Percentage": [whf_count / total_hh * 100, swf_count / total_hh * 100]
     }).sort_values("Percentage", ascending=False)
     fig_gp = px.bar(plot_df, x="Category", y="Percentage", title="8.1. Head of the household - Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("8.1", "Head of the household - Panchayath level", gp_stats, fig_gp)
+    save_and_render("8.1", "Head of the household - Panchayath level", gp_stats, fig_gp, yaxis_title="Head of Household")
 
     # 8.2 Head of the household - village wise
     village_stats = df.groupby("village").agg(
@@ -418,17 +426,17 @@ def run_8_head_of_households(df):
         No_of_Single_Women_Families=("is_single_women_family", lambda x: (x == "yes").sum())
     ).reset_index()
     
-    # FORMULA ALIGNMENT: Reference script lines 942-943 (Distribution logic)
-    total_wh = village_stats["No_of_Women_Headed_Families"].sum()
-    total_sw = village_stats["No_of_Single_Women_Families"].sum()
-    
-    village_stats["Women Headed Families %"] = (village_stats["No_of_Women_Headed_Families"] / total_wh * 100).round(2) if total_wh > 0 else 0
-    village_stats["Single Women Families %"] = (village_stats["No_of_Single_Women_Families"] / total_sw * 100).round(2) if total_sw > 0 else 0
+    # FORMULA ALIGNMENT: Prevalence within each village (Reference 8.1 style)
+    village_hh_counts = df.groupby("village")["farmer_name"].count().to_dict()
+    village_stats["Women Headed Families %"] = (village_stats["No_of_Women_Headed_Families"] / village_stats["village"].map(village_hh_counts) * 100).round(2)
+    village_stats["Single Women Families %"] = (village_stats["No_of_Single_Women_Families"] / village_stats["village"].map(village_hh_counts) * 100).round(2)
     
     # Grand Total Row
     total_vals = [village_stats["No_of_Women_Headed_Families"].sum(), village_stats["No_of_Single_Women_Families"].sum()]
     total_row = pd.DataFrame([[
-        "Grand Total", total_vals[0], total_vals[1], 100.0, 100.0
+        "Grand Total", total_vals[0], total_vals[1], 
+        round(total_vals[0]/total_hh*100, 2) if total_hh > 0 else 0,
+        round(total_vals[1]/total_hh*100, 2) if total_hh > 0 else 0
     ]], columns=village_stats.columns)
     vil_head_table = pd.concat([village_stats, total_row], ignore_index=True)
     
@@ -438,7 +446,7 @@ def run_8_head_of_households(df):
     vil_head_display.rename(columns={"No_of_Women_Headed_Families": "Women Headed", "No_of_Single_Women_Families": "Single Women"}, inplace=True)
     
     fig_vil = px.bar(village_stats.sort_values("Women Headed Families %", ascending=False), x="village", y=["Women Headed Families %", "Single Women Families %"], title="8.2. Head of the household - village wise", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("8.2", "Head of the household - village wise", clean_df(vil_head_display), fig_vil)
+    save_and_render("8.2", "Head of the household - village wise", clean_df(vil_head_display), fig_vil, yaxis_title="Head of Household")
 
 def run_9_migration(df):
     df["mig_status"] = normalize_yes_no(df["migration_from_family"])
@@ -451,7 +459,7 @@ def run_9_migration(df):
     mig_counts["Migration Status"] = mig_counts["Migration Status"].replace({"yes": "Migrating families", "no": "Families without migration"})
     
     fig_gp = px.pie(mig_counts, values="No of households", names="Migration Status", title="9.1. Migration at Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("9.1", "Migration at Panchayath level", mig_counts, fig_gp)
+    save_and_render("9.1", "Migration at Panchayath level", mig_counts, fig_gp, yaxis_title="Migration Status")
 
     # 9.2 Migration at Village level
     Y_L, N_L = "Migrating families", "Families without migration"
@@ -476,7 +484,7 @@ def run_9_migration(df):
     vil_mig["Migrating families %"] = vil_mig["Yes %"]
     vil_mig["Families without migration %"] = vil_mig["No %"]
     fig_vil = px.bar(vil_mig.sort_values("Yes %", ascending=False), x="village", y=["Migrating families %", "Families without migration %"], title="9.2. Migration at Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("9.2", "Migration at Village level", clean_df(vil_mig_display), fig_vil)
+    save_and_render("9.2", "Migration at Village level", clean_df(vil_mig_display), fig_vil, yaxis_title="Migration Status")
 
     # 9.3 Caste wise Migration
     gp_caste_mig = df.groupby(["category", "mig_status"]).size().unstack(fill_value=0).reset_index()
@@ -489,7 +497,7 @@ def run_9_migration(df):
     gp_caste_mig["Families without migration %"] = (gp_caste_mig["no"] / gp_caste_mig["Total"] * 100).round(2)
     gp_caste_mig_display = gp_caste_mig.rename(columns={"yes": "Migrating families", "no": "Families without migration"})
     fig_caste = px.bar(gp_caste_mig.sort_values("Yes %", ascending=False), x="category", y=["Migrating families %", "Families without migration %"], title="9.3. Caste wise migration – Panchayath level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("9.3", "Caste wise migration – Panchayath level", clean_df(gp_caste_mig_display), fig_caste)
+    save_and_render("9.3", "Caste wise migration – Panchayath level", clean_df(gp_caste_mig_display), fig_caste, yaxis_title="Migration Status")
 
 def run_10_institutions(df):
     df["inst_mem"] = normalize_yes_no(df["member_in_institution"])
@@ -502,7 +510,7 @@ def run_10_institutions(df):
     mem_counts["Institution membership"] = mem_counts["Institution membership"].replace({"yes": "HHs with Institution membership", "no": "HHs without Institution membership"})
     
     fig_gp = px.pie(mem_counts, values="No of households", names="Institution membership", title="10.1. Institution membership - Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("10.1", "Institution membership - Panchayath level", mem_counts, fig_gp)
+    save_and_render("10.1", "Institution membership - Panchayath level", mem_counts, fig_gp, yaxis_title="Institution Membership")
 
     # 10.2 Institution membership - Village level
     Y_L, N_L = "HHs with Institution membership", "HHs without Institution membership"
@@ -528,7 +536,7 @@ def run_10_institutions(df):
     vil_mem["Member HH %"] = vil_mem["Yes %"]
     vil_mem["Non-member HH %"] = (vil_mem["no"] / vil_mem["Total"] * 100).round(2)
     fig_vil = px.bar(vil_mem.sort_values("Yes %", ascending=False), x="village", y=["Member HH %", "Non-member HH %"], title="10.2. Institution membership - Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("10.2", "Institution membership - Village level", clean_df(vil_mem_display), fig_vil)
+    save_and_render("10.2", "Institution membership - Village level", clean_df(vil_mem_display), fig_vil, yaxis_title="Institution Membership")
 
 def run_11_land_ownership(df):
     df["land_status"] = normalize_yes_no(df["land_owned"])
@@ -541,7 +549,7 @@ def run_11_land_ownership(df):
     land_counts["Land Ownership Status"] = land_counts["Land Ownership Status"].replace({"yes": "HHs Land owning HHs", "no": "Landless Household"})
     
     fig_gp = px.pie(land_counts, values="No of households", names="Land Ownership Status", title="11.1. Land ownership - Panchayat level", color_discrete_sequence=COLORS)
-    save_and_render("11.1", "Land ownership - Panchayat level", land_counts, fig_gp)
+    save_and_render("11.1", "Land ownership - Panchayat level", land_counts, fig_gp, yaxis_title="Land Ownership")
 
     # 11.2 Caste wise land ownership
     gp_caste_land = df.groupby(["category", "land_status"]).size().unstack(fill_value=0).reset_index()
@@ -557,7 +565,7 @@ def run_11_land_ownership(df):
     
     # Chart with percentages
     fig_caste = px.bar(gp_caste_land.sort_values("Yes %", ascending=False), x="category", y=["HHs landowning %", "landless households %"], title="11.2. Caste wise land ownership - Panchayat level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("11.2", "Caste wise land ownership - Panchayat level", clean_df(gp_caste_land_display), fig_caste)
+    save_and_render("11.2", "Caste wise land ownership - Panchayat level", clean_df(gp_caste_land_display), fig_caste, yaxis_title="Land Ownership")
 
     # 11.3 Land ownership - Village level
     Y_L, N_L = "HHs Land owning HHs", "Landless Household"
@@ -582,7 +590,7 @@ def run_11_land_ownership(df):
     vil_land["HHs landowning %"] = vil_land["Yes %"]
     vil_land["landless households %"] = (vil_land["no"] / vil_land["Total"] * 100).round(2)
     fig_vil = px.bar(vil_land.sort_values("Yes %", ascending=False), x="village", y=["HHs landowning %", "landless households %"], title="11.3. Land ownership - Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("11.3", "Land ownership - Village level", clean_df(vil_land_display), fig_vil)
+    save_and_render("11.3", "Land ownership - Village level", clean_df(vil_land_display), fig_vil, yaxis_title="Land Ownership")
 
 def run_12_land_leased(df):
     df["land_leased_in"] = normalize_yes_no(df["land_leased_in"])
@@ -610,7 +618,7 @@ def run_12_land_leased(df):
         "Percentage": [li_count / total_hh * 100, lo_count / total_hh * 100]
     }).sort_values("Percentage", ascending=False)
     fig_gp = px.bar(plot_df, x="Category", y="Percentage", title="12.1. Panchayath Level Land leased in and leased out", color_discrete_sequence=COLORS)
-    save_and_render("12.1", "Panchayath Level Land leased in and leased out", clean_df(gp_lease), fig_gp)
+    save_and_render("12.1", "Panchayath Level Land leased in and leased out", clean_df(gp_lease), fig_gp, yaxis_title="Land Leased Status")
 
     # 12.2 Village Level
     vil_lease = df.groupby("village").agg(
@@ -637,7 +645,7 @@ def run_12_land_leased(df):
     vil_lease_table_formatted.rename(columns={"Leased_In": "Leased In", "Leased_Out": "Leased Out", "Total_HH": "Total Households"}, inplace=True)
     
     fig_vil = px.bar(vil_lease.sort_values("Leased In %", ascending=False), x="village", y=["Leased In %", "Leased Out %"], title="12.2. Village wise Land leased in and leased out", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("12.2", "Village wise Land leased in and leased out", clean_df(vil_lease_table_formatted), fig_vil)
+    save_and_render("12.2", "Village wise Land leased in and leased out", clean_df(vil_lease_table_formatted), fig_vil, yaxis_title="Land Leased Status")
 
 def run_13_livestock(df):
     df["live_status"] = normalize_yes_no(df["livestock_owned"])
@@ -650,7 +658,7 @@ def run_13_livestock(df):
     live_counts["Livestock Status"] = live_counts["Livestock Status"].replace({"yes": "Livestock owned Households", "no": "Households without livestock"})
     
     fig_gp = px.pie(live_counts, values="No of households", names="Livestock Status", title="13.1. Livestock-owning households - Panchayat level", color_discrete_sequence=COLORS)
-    save_and_render("13.1", "Livestock-owning households - Panchayat level", live_counts, fig_gp)
+    save_and_render("13.1", "Livestock-owning households - Panchayat level", live_counts, fig_gp, yaxis_title="Livestock Ownership")
 
     # 13.2 Livestock owning households - Village level
     Y_L, N_L = "Livestock owned Households", "Households without livestock"
@@ -675,7 +683,7 @@ def run_13_livestock(df):
     vil_live["Livestock owning HH %"] = vil_live["Yes %"]
     vil_live["Non-livestock HH %"] = (vil_live["no"] / vil_live["Total"] * 100).round(2)
     fig_vil = px.bar(vil_live.sort_values("Yes %", ascending=False), x="village", y=["Livestock owning HH %", "Non-livestock HH %"], title="13.2. Livestock owning households - Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("13.2", "Livestock owning households - Village level", clean_df(vil_live_display), fig_vil)
+    save_and_render("13.2", "Livestock owning households - Village level", clean_df(vil_live_display), fig_vil, yaxis_title="Livestock Ownership")
 
 def run_14_soil_types(df_plot):
     # 14.1 Soil types and extent Panchayat level
@@ -688,7 +696,7 @@ def run_14_soil_types(df_plot):
     # Use numeric for chart and sort descending
     gp_soil["Extent%"] = (gp_soil["Total Extent (Acres)"] / gp_total * 100).round(2)
     fig_gp = px.pie(gp_soil, values="Total Extent (Acres)", names="Soil Type", title="14.1. Soil types and extent Panchayat level", hole=0.5, color_discrete_sequence=COLORS)
-    save_and_render("14.1", "Soil types and extent Panchayat level", gp_soil_table, fig_gp)
+    save_and_render("14.1", "Soil types and extent Panchayat level", gp_soil_table, fig_gp, yaxis_title="Soil Type")
 
     # 14.2 Soil types and extent Village level
     vil_soil = df_plot.pivot_table(index="soil_type", columns="village", values="Area", aggfunc="sum", fill_value=0).reset_index()
@@ -705,7 +713,7 @@ def run_14_soil_types(df_plot):
     vil_soil_total = vil_soil_melted.groupby("village")["Area"].transform("sum")
     vil_soil_melted["Extent%"] = (vil_soil_melted["Area"] / vil_soil_total * 100).round(2)
     fig_vil = px.bar(vil_soil_melted.sort_values("Extent%", ascending=False), x="village", y="Extent%", color="soil_type", title="14.2. Soil types and extent Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("14.2", "Soil types and extent Village level", clean_df(vil_soil_table), fig_vil)
+    save_and_render("14.2", "Soil types and extent Village level", clean_df(vil_soil_table), fig_vil, yaxis_title="Soil Type")
 
 def run_15_irrigation(df_plot, df_hh):
     
@@ -721,7 +729,7 @@ def run_15_irrigation(df_plot, df_hh):
     irr_counts["Irrigation Access"] = irr_counts["Irrigation Access"].replace({"yes": "Households having irrigation sources", "no": "Households without irrigation sources"})
     
     fig_gp = px.pie(irr_counts, values="No of households", names="Irrigation Access", title="15.1. Households with Irrigation sources - Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("15.1", "Households with Irrigation sources - Panchayath level", irr_counts, fig_gp)
+    save_and_render("15.1", "Households with Irrigation sources - Panchayath level", irr_counts, fig_gp, yaxis_title="Irrigation Access")
 
     # 15.2 Village level
     Y_L, N_L = "Households having irrigation sources", "Households without irrigation sources"
@@ -746,7 +754,7 @@ def run_15_irrigation(df_plot, df_hh):
     vil_irr["Irrigated HH %"] = vil_irr["Yes %"]
     vil_irr["Non-irrigated HH %"] = (vil_irr["no"] / vil_irr["Total"] * 100).round(2)
     fig_vil = px.bar(vil_irr.sort_values("Yes %", ascending=False), x="village", y=["Irrigated HH %", "Non-irrigated HH %"], title="15.2. Households with Irrigation sources - Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("15.2", "Households with Irrigation sources - Village level", clean_df(vil_irr_display), fig_vil)
+    save_and_render("15.2", "Households with Irrigation sources - Village level", clean_df(vil_irr_display), fig_vil, yaxis_title="Irrigation Access")
 
     # 15.3 & 15.4: Type of Irrigation Sources (Exploded multi-select)
     type_col = "type_Irrigation_sources" if "type_Irrigation_sources" in df_hh.columns else "Irrigation_sources"
@@ -766,7 +774,7 @@ def run_15_irrigation(df_plot, df_hh):
     gp_type.rename(columns={type_col: "Irrigation Type"}, inplace=True)
     
     fig_gp_type = px.bar(gp_type.sort_values("No of households %", ascending=False), x="Irrigation Type", y="No of households %", title="15.3. Type of irrigation sources - Panchayat level", color_discrete_sequence=COLORS)
-    save_and_render("15.3", "Type of irrigation sources - Panchayat level", clean_df(gp_type.drop(columns=["No of households %"]).rename(columns={"Percentage_Str": "No of households %"})), fig_gp_type)
+    save_and_render("15.3", "Type of irrigation sources - Panchayat level", clean_df(gp_type.drop(columns=["No of households %"]).rename(columns={"Percentage_Str": "No of households %"})), fig_gp_type, yaxis_title="Irrigation Type")
 
     # 15.4 Village Level Types
     vil_type = df_exploded.pivot_table(index=type_col, columns="village", values="farmer_name", aggfunc="nunique", fill_value=0).reset_index()
@@ -780,7 +788,7 @@ def run_15_irrigation(df_plot, df_hh):
     vil_type_melted["Percentage"] = (vil_type_melted["Count"] / vil_total_irr * 100).round(2)
     
     fig_vil_type = px.bar(vil_type_melted.sort_values("Percentage", ascending=False), x="village", y="Percentage", color="Irrigation Type", barmode="group", title="15.4. Type of irrigation sources - Village level", color_discrete_sequence=COLORS)
-    save_and_render("15.4", "Type of irrigation sources - Village level", clean_df(vil_type), fig_vil_type)
+    save_and_render("15.4", "Type of irrigation sources - Village level", clean_df(vil_type), fig_vil_type, yaxis_title="Irrigation Type")
 
     # 15.5 & 15.6: Caste-wise Irrigation Sources
     # 15.5 Panchayath level
@@ -790,7 +798,7 @@ def run_15_irrigation(df_plot, df_hh):
     gp_caste_irr_melted["Percentage"] = (gp_caste_irr_melted["Count"] / gp_caste_total * 100).round(2)
     fig_gp_caste = px.bar(gp_caste_irr_melted.sort_values("Percentage", ascending=False), x=type_col, y="Percentage", color="category", barmode="group", color_discrete_sequence=COLORS)
     fig_gp_caste.update_layout(title="15.5. Irrigation sources by category - panchayat level")
-    save_and_render("15.5", "Irrigation sources by category - panchayat level", clean_df(gp_caste_irr), fig_gp_caste)
+    save_and_render("15.5", "Irrigation sources by category - panchayat level", clean_df(gp_caste_irr), fig_gp_caste, yaxis_title="Irrigation Access")
 
     # 15.6 Village level
     vil_caste_irr = df_exploded.pivot_table(index=type_col, columns=["village", "category"], values="farmer_name", aggfunc="nunique", fill_value=0).reset_index()
@@ -799,7 +807,7 @@ def run_15_irrigation(df_plot, df_hh):
     vil_caste_irr_melted["Percentage"] = (vil_caste_irr_melted["Count"] / vil_caste_total * 100).round(2)
     fig_vil_caste = px.bar(vil_caste_irr_melted.sort_values("Percentage", ascending=False), x="village", y="Percentage", color=type_col, facet_col="category", barmode="group", color_discrete_sequence=COLORS)
     fig_vil_caste.update_layout(title="15.6. Irrigation sources by category - village level")
-    save_and_render("15.6", "Irrigation sources by category - village level", clean_df(vil_caste_irr), fig_vil_caste)
+    save_and_render("15.6", "Irrigation sources by category - village level", clean_df(vil_caste_irr), fig_vil_caste, yaxis_title="Irrigation Access")
 
     # 15.7 & 15.8: Extent of Irrigation (Area-wise from Plot Data)
     plot_irr_col = "Irrigation_sources" if "Irrigation_sources" in df_plot.columns else "type_Irrigation_sources"
@@ -810,7 +818,7 @@ def run_15_irrigation(df_plot, df_hh):
     gp_area_irr["Extent%_Str"] = gp_area_irr["Extent%"].astype(str) + "%"
     gp_area_irr.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_gp_area = px.bar(gp_area_irr.sort_values("Extent%", ascending=False), x=plot_irr_col, y="Extent%", title="15.7. Extent of irrigation at Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("15.7", "Extent of irrigation at Panchayath level", clean_df(gp_area_irr.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_area)
+    save_and_render("15.7", "Extent of irrigation at Panchayath level", clean_df(gp_area_irr.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_area, yaxis_title="Irrigation Extent")
 
     # 15.8 Village Level Extent
     vil_area_irr = df_plot.groupby(["village", plot_irr_col])["Area"].sum().reset_index()
@@ -818,7 +826,7 @@ def run_15_irrigation(df_plot, df_hh):
     vil_area_irr["Extent%"] = (vil_area_irr["Area"] / vil_total_area * 100).round(2)
     vil_area_irr.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_vil_area = px.bar(vil_area_irr, x="village", y="Extent%", color=plot_irr_col, barmode="group", title="15.8. Extent of irrigation at village level", color_discrete_sequence=COLORS)
-    save_and_render("15.8", "Extent of irrigation at village level", clean_df(vil_area_irr), fig_vil_area)
+    save_and_render("15.8", "Extent of irrigation at village level", clean_df(vil_area_irr), fig_vil_area, yaxis_title="Irrigation Extent")
 
 def run_16_lulc(df_plot):
     # 16.1 Panchayat Level LULC
@@ -827,7 +835,7 @@ def run_16_lulc(df_plot):
     gp_lulc_table = gp_lulc.copy()
     gp_lulc_table["Extent%"] = (gp_lulc["Total Extent (Acres)"] / gp_lulc["Total Extent (Acres)"].sum() * 100).round(2).astype(str) + "%"
     fig_gp = px.pie(gp_lulc, values="Total Extent (Acres)", names="LULC", title="16.1. LULC WISE EXTENT - Panchayat Level", hole=0.5, color_discrete_sequence=COLORS)
-    save_and_render("16.1", "LULC Distribution - Panchayat Level", gp_lulc_table, fig_gp)
+    save_and_render("16.1", "LULC Distribution - Panchayat Level", gp_lulc_table, fig_gp, yaxis_title="LULC Type")
 
     # 16.2 Village Level LULC
     vil_lulc = df_plot.pivot_table(index="LULC", columns="village", values="Area", aggfunc="sum", fill_value=0).reset_index()
@@ -844,7 +852,7 @@ def run_16_lulc(df_plot):
     vil_total_area = vil_lulc_melted.groupby("village")["Area"].transform("sum")
     vil_lulc_melted["Extent %"] = (vil_lulc_melted["Area"] / vil_total_area * 100).round(2)
     fig_vil = px.bar(vil_lulc_melted.sort_values("Extent %", ascending=False), x="village", y="Extent %", color="LULC", barmode="group", title="16.2. LULC distribution - Village Level", color_discrete_sequence=COLORS)
-    save_and_render("16.2", "LULC distribution - Village Level", clean_df(vil_lulc_table), fig_vil)
+    save_and_render("16.2", "LULC distribution - Village Level", clean_df(vil_lulc_table), fig_vil, yaxis_title="LULC Type")
 
 def run_17_cropping_systems(df_plot):
     # 17.2 Cropping system wise no of households - Panchayat
@@ -852,7 +860,7 @@ def run_17_cropping_systems(df_plot):
     gp_cs_table = gp_cs.copy()
     gp_cs_table["Households %"] = (gp_cs["No of households"] / gp_cs["No of households"].sum() * 100).round(2).astype(str) + "%"
     fig_gp = px.pie(gp_cs, values="No of households", names="cropping_system", title="17.2. Cropping system wise no of households - Panchayat Level", color_discrete_sequence=COLORS)
-    save_and_render("17.2", "Cropping system wise no of households - Panchayat Level", clean_df(gp_cs_table), fig_gp)
+    save_and_render("17.2", "Cropping system wise no of households - Panchayat Level", clean_df(gp_cs_table), fig_gp, yaxis_title="Cropping System")
 
     # 17.3 Village wise no of households
     vil_cs = df_plot.groupby(["village", "cropping_system"])["farmer_name"].nunique().reset_index(name="No of households").sort_values("No of households", ascending=False)
@@ -884,7 +892,7 @@ def run_17_cropping_systems(df_plot):
     vil_cs_plot["Percentage"] = (vil_cs_plot["No of households"] / vil_cs_total * 100).round(2)
     
     fig_vil = px.bar(vil_cs_plot.sort_values("Percentage", ascending=False), x="village", y="Percentage", color="cropping_system", title="17.3. Cropping system wise no of farmers -Village wise", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("17.3", "Cropping system wise no of farmers -Village wise", clean_df(table_df[cols_order]), fig_vil)
+    save_and_render("17.3", "Cropping system wise no of farmers -Village wise", clean_df(table_df[cols_order]), fig_vil, yaxis_title="Cropping System")
 
     # 17.4(a) Extent of Irrigated and Rainfed Area - Panchayath Level
     gp_extent = df_plot.groupby("cropping_system")["Area"].sum().reset_index()
@@ -892,7 +900,7 @@ def run_17_cropping_systems(df_plot):
     gp_extent["Extent%"] = (gp_extent["Area"] / total_area * 100).round(2)
     gp_extent.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_gp_extent = px.bar(gp_extent, x="cropping_system", y="Extent%", text="Extent%", title="17.4(a) Irrigated and Rainfed Area - Panchayath Level", color="cropping_system", color_discrete_sequence=COLORS)
-    save_and_render("17.4(a)", "Irrigated and Rainfed Area - Panchayath Level", clean_df(gp_extent), fig_gp_extent)
+    save_and_render("17.4(a)", "Irrigated and Rainfed Area - Panchayath Level", clean_df(gp_extent), fig_gp_extent, yaxis_title="Cropping System")
 
     # 17.4(b) Village-wise Irrigated vs Rainfed Area
     vil_extent = df_plot.groupby(["village", "cropping_system"])["Area"].sum().reset_index()
@@ -900,7 +908,7 @@ def run_17_cropping_systems(df_plot):
     vil_extent["Extent%"] = (vil_extent["Area"] / vil_total_area * 100).round(2)
     vil_extent.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_vil_extent = px.bar(vil_extent, x="village", y="Extent%", color="cropping_system", barmode="group", text="Extent%", title="17.4(b) Village-wise Irrigated vs Rainfed Area", color_discrete_sequence=COLORS)
-    save_and_render("17.4(b)", "Village-wise Irrigated vs Rainfed Area", clean_df(vil_extent), fig_vil_extent)
+    save_and_render("17.4(b)", "Village-wise Irrigated vs Rainfed Area", clean_df(vil_extent), fig_vil_extent, yaxis_title="Cropping System")
 
 def run_18_cropping_methods(df_plot):
     method_col = next((c for c in ["croping_method", "cropping_method", "cropping method"] if c in df_plot.columns), "cropping_method")
@@ -913,13 +921,13 @@ def run_18_cropping_methods(df_plot):
     gp_total = gp_cm["No of households"].sum()
     gp_cm["Households %"] = (gp_cm["No of households"] / gp_total * 100).round(2).astype(str) + "%"
     fig_gp_cm = px.bar(gp_cm, x=method_col, y="No of households", title="18.2. Cropping method wise no of farmers", color_discrete_sequence=COLORS)
-    save_and_render("18.2", "Cropping method wise no of farmers", clean_df(gp_cm), fig_gp_cm)
+    save_and_render("18.2", "Cropping method wise no of farmers", clean_df(gp_cm), fig_gp_cm, yaxis_title="Cropping Method")
 
     vil_cm = df_plot.groupby(["village", method_col])["farmer_name"].nunique().reset_index(name="No of households")
     vil_total = vil_cm.groupby("village")["No of households"].transform("sum")
     vil_cm["Households %"] = (vil_cm["No of households"] / vil_total * 100).round(2)
     fig_vil_cm = px.bar(vil_cm.sort_values("Households %", ascending=False), x="village", y="Households %", color=method_col, barmode="group", text="Households %", title="18.2(b) Cropping method wise no of households - Village level", color_discrete_sequence=COLORS)
-    save_and_render("18.2(b)", "Cropping method wise no of households - Village level", clean_df(vil_cm), fig_vil_cm)
+    save_and_render("18.2(b)", "Cropping method wise no of households - Village level", clean_df(vil_cm), fig_vil_cm, yaxis_title="Cropping Method")
 
     # 18.3 & 18.4 Cropping method wise extent
     gp_me = df_plot.groupby(method_col)["Area"].sum().reset_index()
@@ -928,14 +936,14 @@ def run_18_cropping_methods(df_plot):
     gp_me["Extent%_Str"] = gp_me["Extent%"].astype(str) + "%"
     gp_me.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_gp_me = px.bar(gp_me.sort_values("Extent%", ascending=False), x=method_col, y="Extent%", title="18.3. Cropping method wise extent - Panchayat Level", color_discrete_sequence=COLORS)
-    save_and_render("18.3", "Cropping method wise extent - Panchayat Level", clean_df(gp_me.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_me)
+    save_and_render("18.3", "Cropping method wise extent - Panchayat Level", clean_df(gp_me.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_me, yaxis_title="Cropping Method")
 
     vil_me = df_plot.groupby(["village", method_col])["Area"].sum().reset_index()
     vil_total_area = vil_me.groupby("village")["Area"].transform("sum")
     vil_me["Extent%"] = (vil_me["Area"] / vil_total_area * 100).round(2)
     vil_me.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_vil_me = px.bar(vil_me.sort_values("Extent%", ascending=False), x="village", y="Extent%", color=method_col, barmode="group", title="18.4. Cropping method wise extent - Village level", color_discrete_sequence=COLORS)
-    save_and_render("18.4", "Cropping method wise extent - Village level", clean_df(vil_me), fig_vil_me)
+    save_and_render("18.4", "Cropping method wise extent - Village level", clean_df(vil_me), fig_vil_me, yaxis_title="Cropping Method")
 
     # 18.5 Cropping practice wise extent
     gp_pe = df_plot.groupby(practice_col)["Area"].sum().reset_index()
@@ -944,14 +952,14 @@ def run_18_cropping_methods(df_plot):
     gp_pe["Extent%_Str"] = gp_pe["Extent%"].astype(str) + "%"
     gp_pe.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_gp_pe = px.bar(gp_pe.sort_values("Extent%", ascending=False), x=practice_col, y="Extent%", title="18.5(a) Cropping practice wise extent - Panchayat level", color_discrete_sequence=COLORS)
-    save_and_render("18.5(a)", "Cropping practice wise extent - Panchayat level", clean_df(gp_pe.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_pe)
+    save_and_render("18.5(a)", "Cropping practice wise extent - Panchayat level", clean_df(gp_pe.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_pe, yaxis_title="Cropping Practice")
 
     vil_pe = df_plot.groupby(["village", practice_col])["Area"].sum().reset_index()
     vil_total_area = vil_pe.groupby("village")["Area"].transform("sum")
     vil_pe["Extent%"] = (vil_pe["Area"] / vil_total_area * 100).round(2)
     vil_pe.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_vil_pe = px.bar(vil_pe.sort_values("Extent%", ascending=False), x="village", y="Extent%", color=practice_col, barmode="group", title="18.5(b) Cropping practice wise extent - Village level", color_discrete_sequence=COLORS)
-    save_and_render("18.5(b)", "Cropping practice wise extent - Village level", clean_df(vil_pe), fig_vil_pe)
+    save_and_render("18.5(b)", "Cropping practice wise extent - Village level", clean_df(vil_pe), fig_vil_pe, yaxis_title="Cropping Practice")
 
     # 18.6 Crops wise extent
     gp_ce = df_plot.groupby(crop_col)["Area"].sum().reset_index()
@@ -960,14 +968,14 @@ def run_18_cropping_methods(df_plot):
     gp_ce["Extent%_Str"] = gp_ce["Extent%"].astype(str) + "%"
     gp_ce.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_gp_ce = px.bar(gp_ce.sort_values("Extent%", ascending=False), x=crop_col, y="Extent%", title="18.6(a) Crops wise extent - Panchayat level", color_discrete_sequence=COLORS)
-    save_and_render("18.6(a)", "Crops wise extent - Panchayat level", clean_df(gp_ce.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_ce)
+    save_and_render("18.6(a)", "Crops wise extent - Panchayat level", clean_df(gp_ce.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_ce, yaxis_title="Crop")
 
     vil_ce = df_plot.groupby(["village", crop_col])["Area"].sum().reset_index()
     vil_total_area = vil_ce.groupby("village")["Area"].transform("sum")
     vil_ce["Extent%"] = (vil_ce["Area"] / vil_total_area * 100).round(2)
     vil_ce.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_vil_ce = px.bar(vil_ce.sort_values("Extent%", ascending=False), x="village", y="Extent%", color=crop_col, barmode="group", title="18.6(b) Crops wise extent - Village level", color_discrete_sequence=COLORS)
-    save_and_render("18.6(b)", "Crops wise extent - Village level", clean_df(vil_ce), fig_vil_ce)
+    save_and_render("18.6(b)", "Crops wise extent - Village level", clean_df(vil_ce), fig_vil_ce, yaxis_title="Crop")
 
     # 18.7 Cropping seasons wise extent
     if season_col in df_plot.columns:
@@ -977,14 +985,14 @@ def run_18_cropping_methods(df_plot):
         gp_se["Extent%_Str"] = gp_se["Extent%"].astype(str) + "%"
         gp_se.rename(columns={"Area": "Extent (ac)"}, inplace=True)
         fig_gp_se = px.bar(gp_se.sort_values("Extent%", ascending=False), x=season_col, y="Extent%", title="18.7(a) Cropping seasons and extent - Panchayat level", color_discrete_sequence=COLORS)
-        save_and_render("18.7(a)", "Cropping seasons and extent - Panchayat level", clean_df(gp_se.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_se)
+        save_and_render("18.7(a)", "Cropping seasons and extent - Panchayat level", clean_df(gp_se.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp_se, yaxis_title="Season")
     
         vil_se = df_plot.groupby(["village", season_col])["Area"].sum().reset_index()
         vil_total_area = vil_se.groupby("village")["Area"].transform("sum")
         vil_se["Extent%"] = (vil_se["Area"] / vil_total_area * 100).round(2)
         vil_se.rename(columns={"Area": "Extent (ac)"}, inplace=True)
         fig_vil_se = px.bar(vil_se, x="village", y="Extent%", color=season_col, barmode="group", title="18.7(b) Cropping seasons and extent - Village level", color_discrete_sequence=COLORS)
-        save_and_render("18.7(b)", "Cropping seasons and extent - Village level", clean_df(vil_se), fig_vil_se)
+        save_and_render("18.7(b)", "Cropping seasons and extent - Village level", clean_df(vil_se), fig_vil_se, yaxis_title="Season")
 
 def run_19_fallow_lands(df_plot):
     if "from_how_many_years" not in df_plot.columns:
@@ -997,7 +1005,7 @@ def run_19_fallow_lands(df_plot):
     gp_fallow["Extent%_Str"] = gp_fallow["Extent%"].astype(str) + "%"
     gp_fallow.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_gp = px.bar(gp_fallow.sort_values("Extent%", ascending=False), x="from_how_many_years", y="Extent%", title="19.1. Fallow Lands Extent - Panchayat Level", color_discrete_sequence=COLORS)
-    save_and_render("19.1", "Fallow Lands Extent - Panchayat Level", clean_df(gp_fallow.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp)
+    save_and_render("19.1", "Fallow Lands Extent - Panchayat Level", clean_df(gp_fallow.drop(columns=["Extent%"]).rename(columns={"Extent%_Str": "Extent%"})), fig_gp, yaxis_title="Fallow Years")
 
     # 19.2 Fallow land types households
     gp_hh_fallow = df_plot[df_plot["from_how_many_years"].notna()].groupby("from_how_many_years")["farmer_name"].nunique().reset_index(name="No of households")
@@ -1006,7 +1014,7 @@ def run_19_fallow_lands(df_plot):
     gp_hh_fallow["Households %_Str"] = gp_hh_fallow["Households %"].astype(str) + "%"
     
     fig_gp_hh = px.bar(gp_hh_fallow.sort_values("Households %", ascending=False), x="from_how_many_years", y="Households %", title="19.2. Fallow land types households - Panchayath level", color_discrete_sequence=COLORS)
-    save_and_render("19.2", "Fallow land types households - Panchayath level", clean_df(gp_hh_fallow.drop(columns=["Households %"]).rename(columns={"Households %_Str": "Households %"})), fig_gp_hh)
+    save_and_render("19.2", "Fallow land types households - Panchayath level", clean_df(gp_hh_fallow.drop(columns=["Households %"]).rename(columns={"Households %_Str": "Households %"})), fig_gp_hh, yaxis_title="Fallow Years")
 
     # 19.3 Fallow land - extent of fallow (Village)
     vil_fallow = df_plot[df_plot["from_how_many_years"].notna()].groupby(["village", "from_how_many_years"])["Area"].sum().reset_index()
@@ -1014,7 +1022,7 @@ def run_19_fallow_lands(df_plot):
     vil_fallow["Extent%"] = (vil_fallow["Area"] / vil_total * 100).round(2)
     vil_fallow.rename(columns={"Area": "Extent (ac)"}, inplace=True)
     fig_vil = px.bar(vil_fallow.sort_values("Extent%", ascending=False), x="village", y="Extent%", color="from_how_many_years", barmode="group", text="Extent%", title="19.3. Fallow land - extent of fallow - Village level", color_discrete_sequence=COLORS)
-    save_and_render("19.3", "Fallow land - extent of fallow - Village level", clean_df(vil_fallow), fig_vil)
+    save_and_render("19.3", "Fallow land - extent of fallow - Village level", clean_df(vil_fallow), fig_vil, yaxis_title="Fallow Years")
 
 def run_20_kitchen_gardens(df):
     df["kg_status"] = normalize_yes_no(df["hh_has_kitchen_garden"])
@@ -1027,7 +1035,7 @@ def run_20_kitchen_gardens(df):
     kg_counts["Kitchen Garden Status"] = kg_counts["Kitchen Garden Status"].replace({"yes": "HH with kitchen garden", "no": "HH without kitchen garden"})
     
     fig_gp = px.pie(kg_counts, values="No of households", names="Kitchen Garden Status", title="20. KITCHEN GARDENS", color_discrete_sequence=COLORS)
-    save_and_render("20.1", "Kitchen Gardens (Panchayath)", kg_counts, fig_gp)
+    save_and_render("20.1", "Kitchen Gardens (Panchayath)", kg_counts, fig_gp, yaxis_title="Kitchen Garden Status")
 
     Y_L, N_L = "HH with kitchen garden", "HH without kitchen garden"
     vil_kg = df.groupby(["village", "kg_status"]).size().unstack(fill_value=0).reset_index()
@@ -1051,7 +1059,7 @@ def run_20_kitchen_gardens(df):
     vil_kg["HH with KG %"] = vil_kg["Yes %"]
     vil_kg["HH without KG %"] = (vil_kg["no"] / vil_kg["Total"] * 100).round(2)
     fig_vil = px.bar(vil_kg.sort_values("Yes %", ascending=False), x="village", y=["HH with KG %", "HH without KG %"], title="20.2. Kitchen Gardens - Village level", barmode="group", color_discrete_sequence=COLORS)
-    save_and_render("20.2", "Kitchen Gardens - Village level", clean_df(vil_kg_display), fig_vil)
+    save_and_render("20.2", "Kitchen Gardens - Village level", clean_df(vil_kg_display), fig_vil, yaxis_title="Kitchen Garden Status")
 
 # ==========================================
 # MAIN APP FLOW
